@@ -39,4 +39,9 @@ Coroutine::run(static function (): void {
         ->start();
 
     fwrite(STDOUT, "echo service started (hub-lite :1997)\n");
+
+    // Keep the OpenSwoole event loop alive; the client coroutine does the rest.
+    while (true) {
+        Coroutine::usleep(1_000_000);
+    }
 });
