@@ -33,9 +33,9 @@ final class ServiceTest extends TestCase
         );
 
         self::assertCount(1, $update['apps']);
-        self::assertSame('app', $update['apps'][0]->type);
-        self::assertSame('Echo', $update['apps'][0]->name);
-        self::assertSame('echo/ui', $update['apps'][0]->path);
+        self::assertSame('app', $update['apps'][0]['type']);
+        self::assertSame('Echo', $update['apps'][0]['name']);
+        self::assertSame('echo/ui', $update['apps'][0]['path']);
     }
 
     public function testSettingsApplyToUpdatePayload(): void

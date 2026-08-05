@@ -107,9 +107,10 @@ final class Service
     {
         $this->apps[] = $app->header;
         $this->addPath($app->header->path, []);
-        $this->channel->stream($app->header->path, static function () use ($app): Generator {
+        $header = $app->header->toArray();
+        $this->channel->stream($app->header->path, static function () use ($app, $header): Generator {
             yield [
-                'header' => $app->header,
+                'header' => $header,
                 'body' => $app->body,
                 'top' => $app->top,
                 'bottom' => $app->bottom,
@@ -182,7 +183,10 @@ final class Service
             $services[] = $entry;
         }
 
-        return ['services' => $services, 'apps' => $this->apps];
+        return [
+            'services' => $services,
+            'apps' => array_map(static fn (AppHeader $header): array => $header->toArray(), $this->apps),
+        ];
     }
 
     /**
