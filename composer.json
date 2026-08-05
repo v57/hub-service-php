@@ -1,0 +1,36 @@
+{
+  "name": "v57/hub-service-php",
+  "description": "PHP port of hub-service — connect to a hub, host post/stream API endpoints, register apps, call API through the hub (lite: no auth, no crypto)",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.3",
+    "ext-json": "*",
+    "ext-openswoole": "*",
+    "dimas/channel-php": "dev-main"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.5"
+  },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../channel-php",
+      "options": {
+        "symlink": true
+      }
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "HubServicePhp\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "HubServicePhp\\Tests\\": "tests/"
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
