@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "18928b43ca6056ff2f347fb58c9d960a",
+    "content-hash": "ee44c504eae63cd06d6300e7430cf61b",
     "packages": [
         {
             "name": "dimas/channel-php",
@@ -1825,7 +1825,9 @@
     "platform": {
         "php": "^8.3",
         "ext-json": "*",
-        "ext-openswoole": "*"
+        "ext-openssl": "*",
+        "ext-openswoole": "*",
+        "ext-sodium": "*"
     },
     "platform-dev": {},
     "plugin-api-version": "2.9.0"

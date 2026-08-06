@@ -4,7 +4,9 @@
 declare(strict_types=1);
 
 // Echo service: hosts post endpoints (echo, echo/upper) and an app UI on a
-// hub (default ws://127.0.0.1:1997, or $HUB). Run:
+// hub (default ws://127.0.0.1:1997, or $HUB). For hub-pro, an ``auth`` file
+// (ed25519 keychain) in the working directory is loaded and a signed token is
+// attached to every connect. Run:
 //   php example/echo.php
 // then call it through the hub from any language:
 //   bun ../hub-service/tests/verify.ts echo echo/upper '"hello"' '"HELLO"'
@@ -38,7 +40,8 @@ Coroutine::run(static function (): void {
         ))
         ->start();
 
-    fwrite(STDOUT, "echo service started (hub-lite :1997)\n");
+    $hub = getenv('HUB');
+    fwrite(STDOUT, 'echo service started (' . ($hub !== false && $hub !== '' ? $hub : 'hub :1997') . ")\n");
 
     // Keep the OpenSwoole event loop alive; the client coroutine does the rest.
     while (true) {

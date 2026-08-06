@@ -2,3 +2,4 @@
 /.phpunit.cache/
 coverage/
 .DS_Store
+/auth

@@ -14,10 +14,12 @@ use RuntimeException;
 /**
  * Service registers API endpoints on a hub and serves calls forwarded by it.
  *
- * Lite port of hub-service (TS reference): no auth, no keychain, no crypto.
- * The wire contract matches the TS reference: on every (re)connect the service
- * sends hub/profile/update (if a profile is set) and hub/service/update with
- * the current services + apps lists.
+ * Port of hub-service (TS reference): on every (re)connect the service sends
+ * hub/profile/update (if a profile is set) and hub/service/update with the
+ * current services + apps lists. For hub-pro, an ``auth`` header with a fresh
+ * keychain token (plus ``v: '0'``) is attached to every connect — the hub
+ * drops services on disconnect, so both the auth token and the updates are
+ * re-issued on each reconnect.
  */
 final class Service
 {
@@ -39,8 +41,11 @@ final class Service
 
     private ?ClientSender $sender = null;
 
+    /** @var callable(int): string */
+    private $sign;
+
     /**
-     * @param array{address?: int|string, name?: string, icon?: mixed} $options
+     * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable(int): string} $options
      */
     public function __construct(array $options = [])
     {
@@ -51,8 +56,12 @@ final class Service
             $this->address = $address;
         } else {
             $env = getenv('HUB');
-            $this->address = ($env !== false && $env !== '') ? $env : 1997;
+            $this->address = ($env !== false && $env !== '')
+                ? (ctype_digit($env) ? (int)$env : $env)
+                : 1997;
         }
+
+        $this->sign = $options['sign'] ?? [Keychain::class, 'sign'];
 
         $name = $options['name'] ?? null;
         $icon = $options['icon'] ?? null;
@@ -138,8 +147,9 @@ final class Service
     }
 
     /**
-     * Connects to the hub. On every (re)connect it sends hub/profile/update
-     * (if a profile is set) and hub/service/update with the current services+apps.
+     * Connects to the hub. On every (re)connect it attaches a fresh auth token
+     * (hub-pro) and sends hub/profile/update (if a profile is set) plus
+     * hub/service/update with the current services+apps.
      */
     public function start(): self
     {
@@ -149,6 +159,11 @@ final class Service
 
         $service = $this;
         $this->sender = $this->channel->connect($this->address, [
+            'headers' => static function () use ($service): array {
+                // Fresh token per connect: the client resolves the provider on
+                // every (re)connect, so each upgrade carries a new signature.
+                return ['auth' => ($service->sign)(10), 'v' => '0'];
+            },
             'onConnect' => static function (Sender $sender) use ($service): void {
                 $service->sendUpdates($sender);
             },
