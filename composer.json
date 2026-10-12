@@ -17,7 +17,7 @@
   "repositories": [
     {
       "type": "path",
-      "url": "../channel-php",
+      "url": "../../Channel/channel-php",
       "options": {
         "symlink": true
       }

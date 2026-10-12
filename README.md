@@ -26,7 +26,7 @@ In this monorepo the dependency is wired by path:
 ```json
 {
   "repositories": [
-    { "type": "path", "url": "../channel-php", "options": { "symlink": true } }
+    { "type": "path", "url": "../../Channel/channel-php", "options": { "symlink": true } }
   ],
   "require": { "dimas/channel-php": "dev-main" }
 }

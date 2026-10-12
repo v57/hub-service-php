@@ -11,7 +11,7 @@
             "version": "dev-main",
             "dist": {
                 "type": "path",
-                "url": "../channel-php",
+                "url": "../../Channel/channel-php",
                 "reference": "6f8a53128ae088b3aaa2b843c54e199f9aaac8cb"
             },
             "require": {
