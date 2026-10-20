@@ -41,7 +41,8 @@ if ($scenario === 'caller') {
             'plain' => $sender->send('echo', 'hi', $context),
             'internal' => $sender->send('trim', ' hi ', $context),
             'stream' => iterator_to_array($sender->values('whoami/values', null, $context), false),
-            'anonymous' => $sender->send('whoami', 'hi', []),
+            'anonymous' => $sender->send('whoami', 'hi', ['service' => 'x']),
+            'spoofed' => $sender->send('whoami', 'hi', ['hub' => ['hubKey' => 'OTHER'] + $context['hub']]),
         ]));
         return true;
     });

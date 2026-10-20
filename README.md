@@ -84,9 +84,10 @@ $response = $service->send('echo/upper', 'hello'); // "HELLO"
   — handler receives the body, returns a `\Generator` of streamed values
 - A handler whose second parameter is untyped or typed `Request` also gets a
   `Request`: `$request->caller` (`Caller`: `key`, `device` (`id`, `name`),
-  `groups`, `owner`, `via`, `claimed`; null when the hub sends none),
-  `$request->hubKey`, `$request->context`, `$request->path`. The hub fills
-  `context.hub`, so a service can trust it.
+  `groups`, `owner`, `via`, `claimed`), `$request->context` (without `hub`),
+  `$request->path`. The caller is null unless `context.hub.hubKey` is the
+  pinned hub key: a hub that predates caller identity may pass a client's
+  `context.hub` through.
 - `app(App $app): self` — app header goes to the hub apps list; the app path
   streams the AppInterface (header + body + top + bottom + data)
 - `send(string $path, mixed $body = null, mixed $context = null): mixed`

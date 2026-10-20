@@ -59,7 +59,9 @@ final class CallerTest extends CoroutineTestCase
                 $service = (new Service(['address' => $hub->port, 'hubKey' => FakeHub::HUB_KEY]))
                     ->post('whoami', static function (mixed $body, Request $request): array {
                         $caller = $request->caller ?? new Caller();
-                        return [$body, $caller->key, $caller->owner, $request->hubKey];
+                        $keys = array_keys($request->context);
+                        sort($keys);
+                        return [$body, $caller->key, $caller->owner, $keys];
                     })
                     ->post('echo', static fn (mixed $body): mixed => $body)
                     ->post('trim', 'trim')
@@ -74,11 +76,13 @@ final class CallerTest extends CoroutineTestCase
                 }
             });
             $out = json_decode((string) file_get_contents($results), true);
-            self::assertSame(['hi', $context['hub']['caller']['key'], true, $context['hub']['hubKey']], $out['post']);
+            self::assertSame(['hi', $context['hub']['caller']['key'], true, []], $out['post']);
             self::assertSame('hi', $out['plain']);
             self::assertSame('hi', $out['internal']);
             self::assertSame(['Mac Studio'], $out['stream']);
-            self::assertSame(['hi', null, false, null], $out['anonymous']);
+            self::assertSame(['hi', null, false, ['service']], $out['anonymous']);
+            // A caller is trusted only from the pinned hub.
+            self::assertSame(['hi', null, false, []], $out['spoofed']);
         } finally {
             $hub->stop();
             putenv($saved === false ? 'HUB_DEVICE_KEY' : 'HUB_DEVICE_KEY=' . $saved);

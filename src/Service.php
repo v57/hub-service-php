@@ -54,6 +54,10 @@ final class Service
 
     private ?string $hubKey;
 
+    private ?string $pinned = null;
+
+    private bool $pinLoaded = false;
+
     private ?string $instance;
 
     public readonly ?Device $device;
@@ -114,7 +118,7 @@ final class Service
     public function post(string $path, callable $handler, array $settings = []): self
     {
         $this->addPath($path, $settings);
-        $this->channel->post($path, self::adapt($handler));
+        $this->channel->post($path, $this->adapt($handler));
 
         return $this;
     }
@@ -130,7 +134,7 @@ final class Service
     public function stream(string $path, callable $handler, array $settings = []): self
     {
         $this->addPath($path, $settings);
-        $this->channel->stream($path, self::adapt($handler));
+        $this->channel->stream($path, $this->adapt($handler));
 
         return $this;
     }
@@ -214,6 +218,7 @@ final class Service
      */
     public function authHeaders(): array
     {
+        $this->pinLoaded = false; // pick up a pin another process wrote
         $hubKey = $this->signTakesHubKey ? $this->hubKey() : null;
         $token = $this->signTakesHubKey ? ($this->sign)(60, $hubKey) : ($this->sign)(60);
 
@@ -266,11 +271,20 @@ final class Service
     }
 
     /**
-     * The hub key this service signs for: supplied, else pinned.
+     * The hub key this service signs for: supplied, else pinned. The pin is
+     * read from hubs.json at each connect and kept in memory.
      */
     public function hubKey(): ?string
     {
-        return $this->hubKey ?? $this->pins()->get($this->target());
+        if ($this->hubKey !== null) {
+            return $this->hubKey;
+        }
+        if (!$this->pinLoaded) {
+            $this->pinned = $this->pins()->get($this->target());
+            $this->pinLoaded = true;
+        }
+
+        return $this->pinned;
     }
 
     /**
@@ -279,6 +293,7 @@ final class Service
     public function forgetHubKey(): void
     {
         $this->hubKey = null;
+        $this->pinned = null;
         $this->pins()->forget($this->target());
     }
 
@@ -377,6 +392,8 @@ final class Service
             return;
         }
         $this->pins()->set($this->target(), $key);
+        $this->pinned = $key;
+        $this->pinLoaded = true;
         $ws = $this->sender?->ws;
         if ($ws !== null) {
             // Close the socket, not the client: it reconnects with v1 headers.
@@ -388,10 +405,10 @@ final class Service
     /**
      * Adapts a ``(body)`` or ``(body, Request)`` handler to channel-php.
      */
-    private static function adapt(callable $handler): \Closure
+    private function adapt(callable $handler): \Closure
     {
         if (self::wantsRequest($handler)) {
-            return static fn (array $request): mixed => $handler($request['body'] ?? null, Request::fromChannel($request));
+            return fn (array $request): mixed => $handler($request['body'] ?? null, Request::fromChannel($request, $this->hubKey()));
         }
 
         return static fn (array $request): mixed => $handler($request['body'] ?? null);
