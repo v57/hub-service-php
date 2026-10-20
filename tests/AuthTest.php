@@ -88,7 +88,7 @@ final class AuthTest extends CoroutineTestCase
         $hub = new FakeHub();
         try {
             $this->co(function () use ($hub): void {
-                $service = (new Service(['address' => $hub->server->port]))->start();
+                $service = (new Service(['address' => $hub->port]))->start();
                 try {
                     $hub->waitFor(static fn (FakeHub $h): int => count($h->connects()), 2);
                     $connects = $hub->connects();
@@ -111,7 +111,7 @@ final class AuthTest extends CoroutineTestCase
         $hub = new FakeHub(lite: true);
         try {
             $this->co(function () use ($hub): void {
-                $service = (new Service(['address' => $hub->server->port]))->start();
+                $service = (new Service(['address' => $hub->port]))->start();
                 try {
                     $hub->waitFor(static fn (FakeHub $h): int => count($h->connects()), 1);
                     \OpenSwoole\Coroutine::usleep(300_000);

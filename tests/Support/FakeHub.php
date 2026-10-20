@@ -4,57 +4,66 @@ declare(strict_types=1);
 
 namespace HubServicePhp\Tests\Support;
 
-use ChannelPhp\Channel;
-use ChannelPhp\Transports\RunningServer;
 use OpenSwoole\Coroutine;
 use RuntimeException;
 
 /**
- * A hub in a forked OpenSwoole server process. It logs every connect's
- * headers and every update to a file the test reads, and answers hub/info
- * unless booted as hub-lite.
+ * A hub in its own OpenSwoole server process (fake-hub.php). It logs every
+ * connect's headers and every update to a file the test reads, and answers
+ * hub/info unless booted as hub-lite.
  */
 final class FakeHub
 {
     public const HUB_KEY = 'MCowBQYDK2VwAyEAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=';
 
-    public readonly RunningServer $server;
+    public readonly int $port;
 
     public readonly string $log;
 
+    /** @var resource */
+    private $process;
+
     /**
-     * @param array<string, callable(array): mixed> $extra more handlers (run in the hub process)
+     * A fresh PHP process, not a fork: a fork inherits the test process's
+     * coroutine hooks, and then the hub's header logging yields inside the
+     * open handler and drops the client's first message.
+     *
+     * @param string $scenario 'none', or 'caller' (test/run calls the service back, results to $results)
      */
-    public function __construct(bool $lite = false, array $extra = [])
+    public function __construct(bool $lite = false, string $scenario = 'none', string $results = '')
     {
         $this->log = (string) tempnam(sys_get_temp_dir(), 'fakehub-php-');
-        $log = $this->log;
-        $channel = new Channel();
-        if (!$lite) {
-            $channel->post('hub/info', static fn (): array => [
-                'key' => self::HUB_KEY, 'protocol' => 1, 'pro' => true, 'mode' => 'default-allow',
-            ]);
+        $this->port = self::freePort();
+        $command = [PHP_BINARY, __DIR__ . '/fake-hub.php', (string) $this->port, $this->log, $lite ? 'lite' : 'pro', $scenario, $results];
+        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => STDOUT, 2 => STDERR], $pipes);
+        if (!is_resource($process)) {
+            throw new RuntimeException('cannot start the fake hub');
         }
-        foreach (['hub/profile/update', 'hub/service/update'] as $path) {
-            $channel->post($path, static function (array $request) use ($log, $path): mixed {
-                self::append($log, ['path' => $path, 'body' => $request['body'] ?? null]);
-                return null;
-            });
+        $this->process = $process;
+        $deadline = microtime(true) + 10.0;
+        while (($socket = @stream_socket_client('tcp://127.0.0.1:' . $this->port, $code, $message, 0.2)) === false) {
+            if (microtime(true) > $deadline) {
+                $this->stop();
+                throw new RuntimeException('the fake hub did not start');
+            }
+            usleep(50_000);
         }
-        foreach ($extra as $path => $handler) {
-            $channel->post($path, $handler);
-        }
-        $this->server = $channel->listen('127.0.0.1:' . self::freePort(), [
-            'state' => static function (array $headers) use ($log): \stdClass {
-                self::append($log, ['headers' => $headers]);
-                return new \stdClass();
-            },
-        ]);
+        fclose($socket);
     }
 
     public function stop(): void
     {
-        $this->server->stop();
+        if (is_resource($this->process)) {
+            proc_terminate($this->process, SIGTERM);
+            $deadline = microtime(true) + 3.0;
+            while (proc_get_status($this->process)['running'] && microtime(true) < $deadline) {
+                usleep(20_000);
+            }
+            if (proc_get_status($this->process)['running']) {
+                proc_terminate($this->process, SIGKILL);
+            }
+            proc_close($this->process);
+        }
         @unlink($this->log);
     }
 
@@ -91,14 +100,6 @@ final class FakeHub
             }
             Coroutine::usleep(20_000);
         }
-    }
-
-    /**
-     * @param array<string, mixed> $entry
-     */
-    private static function append(string $log, array $entry): void
-    {
-        file_put_contents($log, json_encode($entry) . "\n", FILE_APPEND | LOCK_EX);
     }
 
     private static function freePort(): int

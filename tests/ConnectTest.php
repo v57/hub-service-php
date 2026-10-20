@@ -31,7 +31,7 @@ final class ConnectTest extends CoroutineTestCase
         $hub = new FakeHub(lite: true);
         try {
             $this->co(function () use ($hub): void {
-                $service = (new Service(['address' => $hub->server->port, 'name' => 'Echo']))
+                $service = (new Service(['address' => $hub->port, 'name' => 'Echo']))
                     ->post('echo', static fn (mixed $body): mixed => $body)
                     ->start();
                 try {
