@@ -9,6 +9,7 @@ use ChannelPhp\ClientSender;
 use ChannelPhp\Sender;
 use ChannelPhp\Values;
 use Generator;
+use OpenSwoole\Coroutine;
 use RuntimeException;
 
 /**
@@ -165,11 +166,27 @@ final class Service
                 return ['auth' => ($service->sign)(10), 'v' => '0'];
             },
             'onConnect' => static function (Sender $sender) use ($service): void {
-                $service->sendUpdates($sender);
+                // Own coroutine: channel-php calls onConnect before it starts
+                // reading, so awaiting a response here would never return. It
+                // yields first so the client's replay of pending requests,
+                // right after onConnect, doesn't send these a second time.
+                go(static function () use ($service, $sender): void {
+                    Coroutine::usleep(1000);
+                    $service->sendUpdates($sender);
+                });
             },
         ]);
 
         return $this;
+    }
+
+    /**
+     * Disconnects from the hub and stops reconnecting.
+     */
+    public function stop(): void
+    {
+        $this->sender?->stop();
+        $this->sender = null;
     }
 
     /**
@@ -232,7 +249,11 @@ final class Service
         } catch (\Throwable) {
             // hub-lite always responds; ignore failures to keep reconnects going.
         }
-        $sender->send('hub/service/update', $this->update());
+        try {
+            $sender->send('hub/service/update', $this->update());
+        } catch (\Throwable) {
+            // The connection dropped mid-send; the next connect re-sends it.
+        }
     }
 
     private function addPath(string $path, array $settings): void
