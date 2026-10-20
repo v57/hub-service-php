@@ -48,6 +48,7 @@ final class CallerTest extends CoroutineTestCase
         $dir = sys_get_temp_dir() . '/hubcaller-php-' . bin2hex(random_bytes(4));
         mkdir($dir);
         Keychain::setKeyPath($dir . '/auth');
+        $saved = getenv('HUB_DEVICE_KEY');
         putenv('HUB_DEVICE_KEY=' . $dir . '/device.key');
         $context = self::context();
         $results = $dir . '/results.json';
@@ -80,7 +81,7 @@ final class CallerTest extends CoroutineTestCase
             self::assertSame(['hi', null, false, null], $out['anonymous']);
         } finally {
             $hub->stop();
-            putenv('HUB_DEVICE_KEY');
+            putenv($saved === false ? 'HUB_DEVICE_KEY' : 'HUB_DEVICE_KEY=' . $saved);
             Keychain::setKeyPath('auth');
             exec('rm -rf ' . escapeshellarg($dir));
         }
