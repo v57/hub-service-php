@@ -105,7 +105,8 @@ final class Service
     }
 
     /**
-     * Registers a request/response API endpoint.
+     * Registers a request/response API endpoint. A handler with a second
+     * parameter also gets the Request (``$request->caller``: who is calling).
      *
      * @param callable(mixed): mixed $handler
      * @param array{permissions?: array{group?: string, name?: string, allows?: bool}, limit?: mixed} $settings
@@ -113,16 +114,15 @@ final class Service
     public function post(string $path, callable $handler, array $settings = []): self
     {
         $this->addPath($path, $settings);
-        $this->channel->post($path, static function (array $request) use ($handler): mixed {
-            return $handler($request['body'] ?? null);
-        });
+        $this->channel->post($path, self::adapt($handler));
 
         return $this;
     }
 
     /**
      * Registers a streaming API endpoint. The handler receives the request body
-     * and returns a \Generator whose yielded values are streamed to the caller.
+     * (and the Request, as in post) and returns a \Generator whose yielded
+     * values are streamed to the caller.
      *
      * @param callable(mixed): \Generator $handler
      * @param array{permissions?: array{group?: string, name?: string, allows?: bool}, limit?: mixed} $settings
@@ -130,9 +130,7 @@ final class Service
     public function stream(string $path, callable $handler, array $settings = []): self
     {
         $this->addPath($path, $settings);
-        $this->channel->stream($path, static function (array $request) use ($handler): mixed {
-            return $handler($request['body'] ?? null);
-        });
+        $this->channel->stream($path, self::adapt($handler));
 
         return $this;
     }
@@ -384,15 +382,56 @@ final class Service
         }
     }
 
+    /**
+     * Adapts a ``(body)`` or ``(body, Request)`` handler to channel-php.
+     */
+    private static function adapt(callable $handler): \Closure
+    {
+        if (self::wantsRequest($handler)) {
+            return static fn (array $request): mixed => $handler($request['body'] ?? null, Request::fromChannel($request));
+        }
+
+        return static fn (array $request): mixed => $handler($request['body'] ?? null);
+    }
+
+    /**
+     * Whether a handler's second parameter can take the Request: it exists and
+     * is untyped, or typed to accept a Request (so ``'trim'`` gets the body only).
+     */
+    private static function wantsRequest(callable $handler): bool
+    {
+        $parameter = self::reflect($handler)->getParameters()[1] ?? null;
+        if ($parameter === null) {
+            return false;
+        }
+        $type = $parameter->getType();
+        if ($type === null) {
+            return true;
+        }
+        $types = $type instanceof \ReflectionUnionType ? $type->getTypes() : [$type];
+        foreach ($types as $named) {
+            if ($named instanceof \ReflectionNamedType && in_array($named->getName(), [Request::class, 'mixed', 'object'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static function parameterCount(callable $callable): int
     {
-        $reflection = is_array($callable)
+        $reflection = self::reflect($callable);
+
+        return $reflection->isVariadic() ? PHP_INT_MAX : $reflection->getNumberOfParameters();
+    }
+
+    private static function reflect(callable $callable): \ReflectionFunctionAbstract
+    {
+        return is_array($callable)
             ? new \ReflectionMethod($callable[0], $callable[1])
             : (is_string($callable) && str_contains($callable, '::')
                 ? new \ReflectionMethod($callable)
                 : new \ReflectionFunction(\Closure::fromCallable($callable)));
-
-        return $reflection->isVariadic() ? PHP_INT_MAX : $reflection->getNumberOfParameters();
     }
 
     private function addPath(string $path, array $settings): void

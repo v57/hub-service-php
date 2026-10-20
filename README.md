@@ -82,6 +82,11 @@ $response = $service->send('echo/upper', 'hello'); // "HELLO"
   — handler receives the decoded request body, returns the response value
 - `stream(string $path, callable $handler, array $settings = []): self`
   — handler receives the body, returns a `\Generator` of streamed values
+- A handler whose second parameter is untyped or typed `Request` also gets a
+  `Request`: `$request->caller` (`Caller`: `key`, `device` (`id`, `name`),
+  `groups`, `owner`, `via`, `claimed`; null when the hub sends none),
+  `$request->hubKey`, `$request->context`, `$request->path`. The hub fills
+  `context.hub`, so a service can trust it.
 - `app(App $app): self` — app header goes to the hub apps list; the app path
   streams the AppInterface (header + body + top + bottom + data)
 - `send(string $path, mixed $body = null, mixed $context = null): mixed`
