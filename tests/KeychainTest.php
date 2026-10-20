@@ -43,8 +43,8 @@ final class KeychainTest extends TestCase
         self::assertMatchesRegularExpression('/^\d+$/', $parts[3], 'expiry must be a DECIMAL string (TS parity)');
 
         $expiry = (int) $parts[3];
-        self::assertGreaterThanOrEqual(time() + 9, $expiry);
-        self::assertLessThanOrEqual(time() + 11, $expiry);
+        self::assertGreaterThanOrEqual(time() + 59, $expiry);
+        self::assertLessThanOrEqual(time() + 61, $expiry);
     }
 
     public function testSignatureVerifiesAgainstPublicKey(): void

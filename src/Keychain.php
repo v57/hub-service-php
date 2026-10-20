@@ -16,11 +16,17 @@ use RuntimeException;
  *   the 44-byte SPKI DER public key (92 bytes total, 124 base64 chars).
  * - A signed token has the shape ``key.<pub>.<sig>.<expiry>`` where:
  *     pub     = base64 of the 44-byte SPKI public key (bytes 48..92 of the file)
- *     sig     = base64 ed25519 signature over the expiry string
- *     expiry  = DECIMAL epoch-seconds string of now + 10 (TS parity; hub-pro
- *               rejects it once expired or if over 5 minutes ahead)
+ *     sig     = base64 ed25519 signature over the signed data
+ *     expiry  = DECIMAL epoch-seconds string of now + 60 (protocol default;
+ *               hub-pro rejects it once expired or over 5 minutes ahead)
+ * - The signed data depends on the ``v`` header (Docs/Devices/protocol.md):
+ *     v: 0    the expiry string alone
+ *     v: 1    ``hub1:<hub key>:<expiry>``, so the token only works on the hub
+ *             whose key it names
  * - The hub verifies the signature against the embedded public key and treats
  *   the key as the connection identity (owner/host/group permissions).
+ * - Hub keys learned from ``hub/info`` are pinned in ``hubs.json`` beside the
+ *   key file: ``{"<address>": "<hub SPKI>"}`` (see HubPins).
  *
  * Keys are generated with the OpenSSL extension (openssl_pkey_new
  * OPENSSL_KEYTYPE_ED25519) and signatures are produced with the bundled
@@ -30,8 +36,9 @@ use RuntimeException;
  *
  * Usage::
  *
- *     $token = Keychain::sign();        // fresh token for a connect
- *     $pub = Keychain::publicKey();     // the service's public key (identity)
+ *     $token = Keychain::sign();                  // v0 token for a connect
+ *     $token = Keychain::sign(hubKey: $hubKey);   // v1 token bound to one hub
+ *     $pub = Keychain::publicKey();               // the service's public key (identity)
  */
 final class Keychain
 {
@@ -47,6 +54,11 @@ final class Keychain
 
     /** SPKI ed25519 DER: 12-byte header then the 32-byte raw public key. */
     private const PUBLIC_RAW_OFFSET = 12;
+
+    /** RFC 8410 DER headers: PKCS8 before the 32-byte seed, SPKI before the 32-byte public key. */
+    private const PKCS8_PREFIX = "\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20";
+
+    private const SPKI_PREFIX = "\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00";
 
     private static ?string $keyPath = null;
 
@@ -73,15 +85,153 @@ final class Keychain
     }
 
     /**
-     * A fresh auth token: ``key.<pub>.<sig>.<expiry>``.
+     * The service key file in use.
      */
-    public static function sign(int $expires = 10): string
+    public static function keyPath(): string
+    {
+        return self::$keyPath ?? 'auth';
+    }
+
+    /**
+     * A fresh auth token: ``key.<pub>.<sig>.<expiry>``. With ``$hubKey`` (the
+     * pinned hub key) it signs ``hub1:<hub key>:<expiry>`` for ``v: 1``;
+     * without it the token is v0 (the expiry alone).
+     */
+    public static function sign(int $expires = 60, ?string $hubKey = null): string
     {
         $key = self::loadOrGenerate();
-        $data = (string) (time() + $expires);
-        $signature = sodium_crypto_sign_detached($data, self::secretKey($key['seed']));
 
-        return sprintf('key.%s.%s.%s', $key['publicB64'], base64_encode($signature), $data);
+        return self::tokenWith($key['seed'], $key['publicB64'], time() + $expires, $hubKey);
+    }
+
+    /**
+     * An auth token for an exact expiry from key file bytes (92 bytes).
+     */
+    public static function token(string $keyFile, int $expiry, ?string $hubKey = null): string
+    {
+        return self::tokenWith(self::seed($keyFile), self::spki($keyFile), $expiry, $hubKey);
+    }
+
+    /**
+     * The base64 Ed25519 signature of ``$data`` with key file bytes.
+     */
+    public static function signData(string $keyFile, string $data): string
+    {
+        return base64_encode(sodium_crypto_sign_detached($data, self::secretKey(self::seed($keyFile))));
+    }
+
+    /**
+     * The public half of key file bytes: base64 of the 44-byte SPKI DER.
+     */
+    public static function spki(string $keyFile): string
+    {
+        return base64_encode(substr($keyFile, self::PRIVATE_DER_LENGTH, self::PUBLIC_DER_LENGTH));
+    }
+
+    /**
+     * Key file bytes from its base64 text.
+     */
+    public static function decodeKeyFile(string $text, string $path = 'key file'): string
+    {
+        $decoded = base64_decode(trim($text), true);
+        if ($decoded === false || strlen($decoded) !== self::PRIVATE_DER_LENGTH + self::PUBLIC_DER_LENGTH) {
+            throw new RuntimeException("Invalid auth key file: $path (expected 92 decoded bytes)");
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Key file bytes for a 32-byte seed (TS layout).
+     */
+    public static function keyFileBytes(string $seed): string
+    {
+        $public = sodium_crypto_sign_publickey(sodium_crypto_sign_seed_keypair($seed));
+
+        return self::PKCS8_PREFIX . $seed . self::SPKI_PREFIX . $public;
+    }
+
+    /**
+     * Loads key file bytes, creating the file if missing. ``$private`` creates
+     * it atomically with mode 0600 inside a 0700 directory (device keys).
+     */
+    public static function loadKeyFile(string $path, bool $private = false): string
+    {
+        if (is_file($path)) {
+            return self::decodeKeyFile((string) file_get_contents($path), $path);
+        }
+
+        $bytes = self::keyFileBytes(random_bytes(self::SEED_LENGTH));
+        if (!$private) {
+            if (file_put_contents($path, base64_encode($bytes)) === false) {
+                throw new RuntimeException("Cannot write key file: $path");
+            }
+
+            return $bytes;
+        }
+
+        $dir = dirname($path);
+        if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+            throw new RuntimeException("Cannot create key directory: $dir");
+        }
+        $temp = @tempnam($dir, '.device.');
+        if ($temp === false || dirname($temp) !== $dir) {
+            if ($temp !== false) {
+                @unlink($temp);
+            }
+            throw new RuntimeException("Cannot write key file: $path");
+        }
+        try {
+            chmod($temp, 0600);
+            file_put_contents($temp, base64_encode($bytes));
+            // link, not rename: a key another process created first wins.
+            if (!@link($temp, $path)) {
+                if (is_file($path)) {
+                    return self::decodeKeyFile((string) file_get_contents($path), $path);
+                }
+                throw new RuntimeException("Cannot write key file: $path");
+            }
+        } finally {
+            @unlink($temp);
+        }
+
+        return $bytes;
+    }
+
+    /**
+     * The hubs.json key for a hub address: a bare port is
+     * ``ws://localhost:<port>``; a URL keeps its form with the scheme and host
+     * lowercased and no trailing slash (channel TS normalization).
+     */
+    public static function pinAddress(int|string $address): string
+    {
+        if (is_int($address) || ctype_digit($address)) {
+            return 'ws://localhost:' . $address;
+        }
+        $url = $address;
+        if (preg_match('#^([A-Za-z][A-Za-z0-9+.-]*)://([^/?\#]*)(.*)$#s', $url, $m) === 1) {
+            $authority = $m[2];
+            $at = strrpos($authority, '@');
+            $authority = $at === false
+                ? strtolower($authority)
+                : substr($authority, 0, $at + 1) . strtolower(substr($authority, $at + 1));
+            $url = strtolower($m[1]) . '://' . $authority . $m[3];
+        }
+
+        return rtrim($url, '/');
+    }
+
+    private static function tokenWith(string $seed, string $publicB64, int $expiry, ?string $hubKey): string
+    {
+        $data = $hubKey !== null && $hubKey !== '' ? "hub1:$hubKey:$expiry" : (string) $expiry;
+        $signature = sodium_crypto_sign_detached($data, self::secretKey($seed));
+
+        return sprintf('key.%s.%s.%s', $publicB64, base64_encode($signature), $expiry);
+    }
+
+    private static function seed(string $keyFile): string
+    {
+        return substr($keyFile, self::SEED_OFFSET, self::SEED_LENGTH);
     }
 
     /**
@@ -93,14 +243,11 @@ final class Keychain
             return ['seed' => self::$seed, 'publicB64' => self::$publicB64];
         }
 
-        $path = self::$keyPath ?? 'auth';
+        $path = self::keyPath();
         if (is_file($path)) {
-            $decoded = base64_decode(trim((string) file_get_contents($path)), true);
-            if ($decoded === false || strlen($decoded) !== self::PRIVATE_DER_LENGTH + self::PUBLIC_DER_LENGTH) {
-                throw new RuntimeException("Invalid auth key file: $path (expected 92 decoded bytes)");
-            }
-            self::$seed = substr($decoded, self::SEED_OFFSET, self::SEED_LENGTH);
-            self::$publicB64 = base64_encode(substr($decoded, self::PRIVATE_DER_LENGTH, self::PUBLIC_DER_LENGTH));
+            $decoded = self::decodeKeyFile((string) file_get_contents($path), $path);
+            self::$seed = self::seed($decoded);
+            self::$publicB64 = self::spki($decoded);
         } else {
             $generated = self::generate();
             $encoded = base64_encode($generated['privateDer'] . $generated['publicDer']);

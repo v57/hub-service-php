@@ -21,6 +21,11 @@ use RuntimeException;
  * keychain token (plus ``v: '0'``) is attached to every connect — the hub
  * drops services on disconnect, so both the auth token and the updates are
  * re-issued on each reconnect.
+ *
+ * Auth follows Docs/Devices/protocol.md: v0 tokens until the hub key is pinned
+ * from hub/info (in ``hubs.json`` beside the key file), hub-bound v1 tokens
+ * after that. A refused v1 connect (the hub key changed or a different server
+ * answers) keeps retrying with v1; there is no silent v0 fallback.
  */
 final class Service
 {
@@ -42,11 +47,20 @@ final class Service
 
     private ?ClientSender $sender = null;
 
-    /** @var callable(int): string */
+    /** @var callable(int, ?string=): string */
     private $sign;
 
+    private bool $signTakesHubKey;
+
+    private ?string $hubKey;
+
     /**
-     * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable(int): string} $options
+     * Options: ``address``, ``name``, ``icon``; ``sign`` (token factory, called
+     * as ``sign(expires, hubKey)``; one taking a single parameter always
+     * connects with v0); ``hubKey`` (the hub's key when known up front,
+     * otherwise learned from hub/info and pinned).
+     *
+     * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable, hubKey?: string} $options
      */
     public function __construct(array $options = [])
     {
@@ -63,6 +77,8 @@ final class Service
         }
 
         $this->sign = $options['sign'] ?? [Keychain::class, 'sign'];
+        $this->signTakesHubKey = self::parameterCount($this->sign) >= 2;
+        $this->hubKey = $options['hubKey'] ?? null;
 
         $name = $options['name'] ?? null;
         $icon = $options['icon'] ?? null;
@@ -163,7 +179,7 @@ final class Service
             'headers' => static function () use ($service): array {
                 // Fresh token per connect: the client resolves the provider on
                 // every (re)connect, so each upgrade carries a new signature.
-                return ['auth' => ($service->sign)(10), 'v' => '0'];
+                return $service->authHeaders();
             },
             'onConnect' => static function (Sender $sender) use ($service): void {
                 // Own coroutine: channel-php calls onConnect before it starts
@@ -178,6 +194,53 @@ final class Service
         ]);
 
         return $this;
+    }
+
+    /**
+     * Auth headers for the next connect: a fresh token, ``v`` and (with a
+     * pinned or supplied hub key) a v1 signature.
+     *
+     * @return array<string, string>
+     */
+    public function authHeaders(): array
+    {
+        $hubKey = $this->signTakesHubKey ? $this->hubKey() : null;
+        $token = $this->signTakesHubKey ? ($this->sign)(60, $hubKey) : ($this->sign)(60);
+
+        return ['auth' => (string) $token, 'v' => $hubKey !== null ? '1' : '0'];
+    }
+
+    /**
+     * The hubs.json pin key for this hub.
+     */
+    public function target(): string
+    {
+        return Keychain::pinAddress($this->address);
+    }
+
+    /**
+     * Pinned hub keys: ``hubs.json`` beside the service key file.
+     */
+    public function pins(): HubPins
+    {
+        return new HubPins(dirname(Keychain::keyPath()) . '/hubs.json');
+    }
+
+    /**
+     * The hub key this service signs for: supplied, else pinned.
+     */
+    public function hubKey(): ?string
+    {
+        return $this->hubKey ?? $this->pins()->get($this->target());
+    }
+
+    /**
+     * Clears the pinned hub key; the next connect learns it again (v0).
+     */
+    public function forgetHubKey(): void
+    {
+        $this->hubKey = null;
+        $this->pins()->forget($this->target());
     }
 
     /**
@@ -254,6 +317,44 @@ final class Service
         } catch (\Throwable) {
             // The connection dropped mid-send; the next connect re-sends it.
         }
+        if ($this->signTakesHubKey && $this->hubKey() === null) {
+            $this->learnHubKey($sender);
+        }
+    }
+
+    /**
+     * Pins the hub key from hub/info, then reconnects with v1 at once.
+     * hub-lite doesn't answer hub/info, so the service stays on v0 there.
+     */
+    private function learnHubKey(Sender $sender): void
+    {
+        try {
+            $info = $sender->send('hub/info');
+        } catch (\Throwable) {
+            return;
+        }
+        $key = is_array($info) ? ($info['key'] ?? null) : null;
+        if (!is_string($key) || $key === '' || $this->hubKey() !== null) {
+            return;
+        }
+        $this->pins()->set($this->target(), $key);
+        $ws = $this->sender?->ws;
+        if ($ws !== null) {
+            // Close the socket, not the client: it reconnects with v1 headers.
+            $socket = (new \ReflectionProperty($ws, 'ws'))->getValue($ws);
+            $socket?->close();
+        }
+    }
+
+    private static function parameterCount(callable $callable): int
+    {
+        $reflection = is_array($callable)
+            ? new \ReflectionMethod($callable[0], $callable[1])
+            : (is_string($callable) && str_contains($callable, '::')
+                ? new \ReflectionMethod($callable)
+                : new \ReflectionFunction(\Closure::fromCallable($callable)));
+
+        return $reflection->isVariadic() ? PHP_INT_MAX : $reflection->getNumberOfParameters();
     }
 
     private function addPath(string $path, array $settings): void
