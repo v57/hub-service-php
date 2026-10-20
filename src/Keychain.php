@@ -174,16 +174,16 @@ final class Keychain
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new RuntimeException("Cannot create key directory: $dir");
         }
-        $temp = @tempnam($dir, '.device.');
-        if ($temp === false || dirname($temp) !== $dir) {
-            if ($temp !== false) {
-                @unlink($temp);
-            }
+        $temp = $dir . '/.device.' . bin2hex(random_bytes(6));
+        $old = umask(0077);
+        $file = @fopen($temp, 'x');
+        umask($old);
+        if ($file === false) {
             throw new RuntimeException("Cannot write key file: $path");
         }
         try {
-            chmod($temp, 0600);
-            file_put_contents($temp, base64_encode($bytes));
+            fwrite($file, base64_encode($bytes));
+            fclose($file);
             // link, not rename: a key another process created first wins.
             if (!@link($temp, $path)) {
                 if (is_file($path)) {

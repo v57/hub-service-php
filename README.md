@@ -8,9 +8,9 @@ PHP port of [hub-service](https://github.com/v57/hub-service) — connect to a
 `$HUB`), host your own post/stream API endpoints, register apps, and call API
 through the hub.
 
-Lite port: no auth, no keychain, no crypto (hub-pro territory). The wire
-contract matches the TS reference (`hub/profile/update`, `hub/service/update`,
-AppInterface + element DSL).
+The wire contract matches the TS reference (`hub/profile/update`,
+`hub/service/update`, AppInterface + element DSL). Auth and devices follow
+[`Docs/Devices/protocol.md`](../../Docs/Devices/protocol.md).
 
 Built on [channel-php](https://github.com/v57/channel-php) (OpenSwoole
 coroutines; PHP ^8.3 + ext-openswoole).
@@ -91,6 +91,21 @@ $response = $service->send('echo/upper', 'hello'); // "HELLO"
 - `start(): self` — connect; re-announces `hub/profile/update` (if set) and
   `hub/service/update` on every (re)connect (the hub drops services on
   disconnect)
+- `stop(): void` — disconnect and stop reconnecting
+
+## Auth and devices
+
+- **Service key:** the `auth` file in the cwd (TS layout), sent as a signed
+  `auth` token on every connect.
+- **Hub key:** the first connect uses `v: 0` and calls `hub/info`; the hub key
+  is pinned in `hubs.json` beside the `auth` file and later connects sign
+  `hub1:<hub key>:<expiry>` with `v: 1`. hub-lite stays on v0. The `hubKey`
+  option supplies it up front and `forgetHubKey()` clears the pin.
+- **Device:** a certificate signed by `~/.hub/device.key` (`HUB_DEVICE_KEY`
+  overrides it) goes in the `device` header and is renewed with less than a
+  day left. The `instance` option sets the instance name and
+  `'device' => false` turns device mode off; `new Device(name:, platform:,
+  parent:, key:)` overrides the defaults.
 
 `$settings` carries `permissions` (`group` auto-filled from the first path
 segment, TS parity), `allows`, and `limit` — wire-parity fields that hub-lite

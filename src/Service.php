@@ -54,13 +54,22 @@ final class Service
 
     private ?string $hubKey;
 
+    private ?string $instance;
+
+    public readonly ?Device $device;
+
     /**
      * Options: ``address``, ``name``, ``icon``; ``sign`` (token factory, called
      * as ``sign(expires, hubKey)``; one taking a single parameter always
      * connects with v0); ``hubKey`` (the hub's key when known up front,
-     * otherwise learned from hub/info and pinned).
+     * otherwise learned from hub/info and pinned); ``instance`` (this service's
+     * name on its device, unique per device; default: ``name``, else the first
+     * segment of the first registered path, else ``service``); ``device``
+     * (true, the default, certifies the service with this device's key when
+     * it can be read or created; false sends no ``device`` header; a Device
+     * uses that one).
      *
-     * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable, hubKey?: string} $options
+     * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable, hubKey?: string, instance?: string, device?: bool|Device} $options
      */
     public function __construct(array $options = [])
     {
@@ -79,6 +88,9 @@ final class Service
         $this->sign = $options['sign'] ?? [Keychain::class, 'sign'];
         $this->signTakesHubKey = self::parameterCount($this->sign) >= 2;
         $this->hubKey = $options['hubKey'] ?? null;
+        $this->instance = $options['instance'] ?? null;
+        $device = $options['device'] ?? true;
+        $this->device = $device instanceof Device ? $device : ($device ? new Device() : null);
 
         $name = $options['name'] ?? null;
         $icon = $options['icon'] ?? null;
@@ -207,7 +219,33 @@ final class Service
         $hubKey = $this->signTakesHubKey ? $this->hubKey() : null;
         $token = $this->signTakesHubKey ? ($this->sign)(60, $hubKey) : ($this->sign)(60);
 
-        return ['auth' => (string) $token, 'v' => $hubKey !== null ? '1' : '0'];
+        $headers = ['auth' => (string) $token, 'v' => $hubKey !== null ? '1' : '0'];
+        if ($this->device !== null) {
+            try {
+                // The certificate names the key in the token, whoever signed it.
+                $headers['device'] = $this->device->certificate(explode('.', $headers['auth'])[1] ?? '', $this->instance());
+            } catch (\Throwable) {
+                // No readable or creatable device key: a plain key connection.
+            }
+        }
+
+        return $headers;
+    }
+
+    /**
+     * The instance name sent in the certificate.
+     */
+    public function instance(): string
+    {
+        if ($this->instance !== null && $this->instance !== '') {
+            return $this->instance;
+        }
+        if (isset($this->profile['name']) && $this->profile['name'] !== '') {
+            return $this->profile['name'];
+        }
+        $first = array_key_first($this->paths);
+
+        return $first !== null ? explode('/', (string) $first)[0] : 'service';
     }
 
     /**
