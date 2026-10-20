@@ -96,11 +96,22 @@ final class DeviceTest extends TestCase
 
     public function testInstanceDefaults(): void
     {
-        self::assertSame('Echo', (new Service(['name' => 'Echo']))->instance());
-        $service = new Service();
-        self::assertSame('service', $service->instance());
-        $service->post('s3/read', static fn (mixed $body): mixed => $body)->post('echo', static fn (mixed $body): mixed => $body);
-        self::assertSame('s3', $service->instance());
+        $saved = getenv('HUB_INSTANCE');
+        $cwd = (string) getcwd();
+        putenv('HUB_INSTANCE');
+        mkdir($this->dir . '/s3-local');
+        chdir($this->dir . '/s3-local');
+        try {
+            self::assertSame('s3-local', (new Service())->instance());
+            self::assertSame('Echo', (new Service(['name' => 'Echo']))->instance());
+            putenv('HUB_INSTANCE=s3-local/Backup Disk');
+            self::assertSame('s3-local/Backup Disk', (new Service(['name' => 'Echo']))->instance());
+            self::assertSame('mine', (new Service(['instance' => 'mine']))->instance());
+            self::assertSame(str_repeat('é', 64), (new Service(['instance' => str_repeat('é', 100)]))->instance());
+        } finally {
+            chdir($cwd);
+            putenv($saved === false ? 'HUB_INSTANCE' : 'HUB_INSTANCE=' . $saved);
+        }
     }
 
     public function testInstanceLengthChecked(): void

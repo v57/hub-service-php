@@ -63,8 +63,8 @@ final class Service
      * as ``sign(expires, hubKey)``; one taking a single parameter always
      * connects with v0); ``hubKey`` (the hub's key when known up front,
      * otherwise learned from hub/info and pinned); ``instance`` (this service's
-     * name on its device, unique per device; default: ``name``, else the first
-     * segment of the first registered path, else ``service``); ``device``
+     * name on its device, unique per device; default: ``HUB_INSTANCE``, else
+     * ``name``, else the cwd name, else ``service``); ``device``
      * (true, the default, certifies the service with this device's key when
      * it can be read or created; false sends no ``device`` header; a Device
      * uses that one).
@@ -231,19 +231,22 @@ final class Service
     }
 
     /**
-     * The instance name sent in the certificate.
+     * The instance name sent in the certificate: the option, else
+     * ``HUB_INSTANCE`` (the launcher sets it), else the name, else the cwd
+     * name, else ``service``; at most 128 UTF-8 bytes.
      */
     public function instance(): string
     {
-        if ($this->instance !== null && $this->instance !== '') {
-            return $this->instance;
-        }
-        if (isset($this->profile['name']) && $this->profile['name'] !== '') {
-            return $this->profile['name'];
-        }
-        $first = array_key_first($this->paths);
+        $env = getenv('HUB_INSTANCE');
+        foreach ([$this->instance, $env === false ? null : $env, $this->profile['name'] ?? null, basename((string) getcwd())] as $value) {
+            if ($value !== null && $value !== '') {
+                $name = mb_strcut($value, 0, 128, 'UTF-8');
 
-        return $first !== null ? explode('/', (string) $first)[0] : 'service';
+                return $name === '' ? 'service' : $name;
+            }
+        }
+
+        return 'service';
     }
 
     /**
