@@ -30,6 +30,14 @@ foreach (['hub/profile/update', 'hub/service/update'] as $path) {
         return null;
     });
 }
+$channel->post('network/shares/replace', static function (array $request) use ($append): array {
+    $append(['replaced' => $request['body']]);
+    return ['shares' => array_map(static fn (array $share): array => [
+        'version' => 1, 'resourceId' => 'hnr1_' . $share['name'], 'authority' => $share['name'] . '.hub.invalid',
+        'providerId' => 'provider', 'protocol' => $share['protocol'], 'overlayAddress' => '100.96.0.2',
+        'port' => $share['target']['port'],
+    ], $request['body']['shares'])];
+});
 if ($scenario === 'caller') {
     // Calls the service back with the vectors' caller context.
     $vectors = json_decode((string) file_get_contents(__DIR__ . '/../../../../Docs/Devices/vectors.json'), true);

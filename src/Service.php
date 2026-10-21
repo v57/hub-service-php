@@ -62,6 +62,14 @@ final class Service
 
     public readonly ?Device $device;
 
+    /** Hub Network shares; the agent socket is ``$network->agentSocket``. */
+    public readonly NetworkPublisher $network;
+
+    /** @var callable(string): string */
+    private $signChallenge;
+
+    private ?string $serviceKey = null;
+
     /**
      * Options: ``address``, ``name``, ``icon``; ``sign`` (token factory, called
      * as ``sign(expires, hubKey)``; one taking a single parameter always
@@ -71,7 +79,8 @@ final class Service
      * ``name``, else the cwd name, else ``service``); ``device``
      * (true, the default, certifies the service with this device's key when
      * it can be read or created; false sends no ``device`` header; a Device
-     * uses that one).
+     * uses that one); ``signChallenge`` (signs Hub Network agent challenges
+     * with the service key; default: the keychain ``auth`` file).
      *
      * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable, hubKey?: string, instance?: string, device?: bool|Device} $options
      */
@@ -95,6 +104,8 @@ final class Service
         $this->instance = $options['instance'] ?? null;
         $device = $options['device'] ?? true;
         $this->device = $device instanceof Device ? $device : ($device ? new Device() : null);
+        $this->signChallenge = $options['signChallenge'] ?? [Keychain::class, 'signChallenge'];
+        $this->network = new NetworkPublisher();
 
         $name = $options['name'] ?? null;
         $icon = $options['icon'] ?? null;
@@ -223,6 +234,7 @@ final class Service
         $token = $this->signTakesHubKey ? ($this->sign)(60, $hubKey) : ($this->sign)(60);
 
         $headers = ['auth' => (string) $token, 'v' => $hubKey !== null ? '1' : '0'];
+        $this->serviceKey = explode('.', $headers['auth'])[1] ?? null;
         if ($this->device !== null) {
             try {
                 // The certificate names the key in the token, whoever signed it.
@@ -371,9 +383,121 @@ final class Service
         } catch (\Throwable) {
             // The connection dropped mid-send; the next connect re-sends it.
         }
+        if ($this->network->hasShares()) {
+            try {
+                $this->network->republishAll($this->serviceKey(), $this->signChallenge, $sender);
+            } catch (\Throwable $error) {
+                error_log('Failed to republish network shares: ' . $error->getMessage());
+            }
+        }
         if ($this->signTakesHubKey && $this->hubKey() === null) {
             $this->learnHubKey($sender);
         }
+    }
+
+    /**
+     * The key this service connects with (the key in its auth token).
+     */
+    public function serviceKey(): string
+    {
+        return $this->serviceKey ?? Keychain::publicKey();
+    }
+
+    /**
+     * Declares a Hub Network share before start(): the declared set is
+     * published on connect and after every reconnect. Default policy: private.
+     *
+     * @param array<string, mixed>|null $policy
+     */
+    public function share(string $name, string $protocol, string $host, int $port, ?array $policy = null): self
+    {
+        $this->network->declareShare(self::shareArray($name, $protocol, $host, $port, $policy));
+
+        return $this;
+    }
+
+    /**
+     * Publishes a local TCP/UDP port through Hub Network; returns every
+     * publication (resourceId, authority, overlayAddress, port, ...).
+     *
+     * @param array<string, mixed>|null $policy
+     * @return list<array<string, mixed>>
+     */
+    public function publishShare(string $name, string $protocol, string $host, int $port, ?array $policy = null): array
+    {
+        return $this->network->publishShare(
+            self::shareArray($name, $protocol, $host, $port, $policy),
+            $this->serviceKey(),
+            $this->signChallenge,
+            $this->senderOrError(),
+        );
+    }
+
+    /**
+     * Changes a share's policy or target port and republishes it.
+     *
+     * @param array<string, mixed>|null $policy
+     * @return list<array<string, mixed>>
+     */
+    public function updateShare(string $name, ?array $policy = null, ?int $port = null): array
+    {
+        $current = null;
+        foreach ($this->network->declaredShares() as $share) {
+            if ($share['name'] === $name) {
+                $current = $share;
+            }
+        }
+        if ($current === null) {
+            throw new RuntimeException("Share '$name' not found");
+        }
+        if ($policy !== null) {
+            $current['policy'] = $policy;
+        }
+        if ($port !== null) {
+            $current['target']['port'] = $port;
+        }
+
+        return $this->network->publishShare($current, $this->serviceKey(), $this->signChallenge, $this->senderOrError());
+    }
+
+    /**
+     * Removes a share from Hub Network.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function removeShare(string $name): array
+    {
+        return $this->network->removeShare($name, $this->serviceKey(), $this->signChallenge, $this->senderOrError());
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function sharePublications(): array
+    {
+        return $this->network->publications();
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function sharePublication(string $name): ?array
+    {
+        return $this->network->publication($name);
+    }
+
+    /**
+     * @param array<string, mixed>|null $policy
+     * @return array<string, mixed>
+     */
+    private static function shareArray(string $name, string $protocol, string $host, int $port, ?array $policy): array
+    {
+        return [
+            'name' => $name,
+            'protocol' => $protocol,
+            'target' => ['host' => $host, 'port' => $port],
+            'policy' => $policy ?? ['mode' => 'private'],
+        ];
     }
 
     /**

@@ -105,6 +105,17 @@ final class Keychain
     }
 
     /**
+     * The base64 signature of ``$data`` with the service key (agent challenges
+     * for Hub Network shares).
+     */
+    public static function signChallenge(string $data): string
+    {
+        $key = self::loadOrGenerate();
+
+        return base64_encode(sodium_crypto_sign_detached($data, self::secretKey($key['seed'])));
+    }
+
+    /**
      * An auth token for an exact expiry from key file bytes (92 bytes).
      */
     public static function token(string $keyFile, int $expiry, ?string $hubKey = null): string

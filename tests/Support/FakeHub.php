@@ -89,6 +89,19 @@ final class FakeHub
     }
 
     /**
+     * The network/shares/replace bodies received.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function replaced(): array
+    {
+        return array_values(array_map(
+            static fn (array $e): array => $e['replaced'],
+            array_filter($this->entries(), static fn (array $e): bool => isset($e['replaced'])),
+        ));
+    }
+
+    /**
      * Waits (inside a coroutine) until the log has $count matching entries.
      */
     public function waitFor(callable $count, int $want, float $seconds = 5.0): void
