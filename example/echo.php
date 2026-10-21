@@ -4,7 +4,7 @@
 declare(strict_types=1);
 
 // Echo service: hosts post endpoints (echo, echo/upper) and an app UI on a
-// hub (default ws://127.0.0.1:1997, or $HUB). For hub-pro, an ``auth`` file
+// hub (default ws://127.0.0.1:1997, or $HUB). For hub-server, an ``auth`` file
 // (ed25519 keychain) in the working directory is loaded and a signed token is
 // attached to every connect. Run:
 //   php example/echo.php

@@ -17,7 +17,7 @@ use RuntimeException;
  *
  * Port of hub-service (TS reference): on every (re)connect the service sends
  * hub/profile/update (if a profile is set) and hub/service/update with the
- * current services + apps lists. For hub-pro, an ``auth`` header with a fresh
+ * current services + apps lists. For hub-server, an ``auth`` header with a fresh
  * keychain token (plus ``v: '0'``) is attached to every connect — the hub
  * drops services on disconnect, so both the auth token and the updates are
  * re-issued on each reconnect.
@@ -190,7 +190,7 @@ final class Service
 
     /**
      * Connects to the hub. On every (re)connect it attaches a fresh auth token
-     * (hub-pro) and sends hub/profile/update (if a profile is set) plus
+     * (hub-server) and sends hub/profile/update (if a profile is set) plus
      * hub/service/update with the current services+apps.
      */
     public function start(): self
