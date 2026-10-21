@@ -85,7 +85,7 @@ final class NetworkTest extends CoroutineTestCase
                 $service->network->agentSocket = $this->socket;
                 $service->share('s3', 'tcp', '127.0.0.1', 9001, ['mode' => 'hub'])->start();
                 try {
-                    $hub->waitFor(static fn (FakeHub $h): int => count($h->replaced()), 1);
+                    $hub->waitFor(static fn (): int => $service->sharePublication('s3') === null ? 0 : 1, 1);
                     $wire = $hub->replaced()[0]['shares'][0];
                     self::assertSame(['s3', 1, ['mode' => 'hub']], [$wire['name'], $wire['version'], $wire['policy']]);
                     self::assertSame(Keychain::publicKey(), $wire['attestation']['serviceKey']);
