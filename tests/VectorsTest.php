@@ -35,7 +35,9 @@ final class VectorsTest extends TestCase
     {
         $device = self::vectors()['keys']['device'];
         self::assertSame($device['deviceId'], Device::deviceId($device['publicKey']));
-        self::assertSame($device['safetyCode'], Device::safetyCode($device['publicKey']));
+        foreach (self::vectors()['safetyCode']['cases'] as $code) {
+            self::assertSame($code['code'], Device::safetyCode($code['hubKey'], $code['deviceKey'], $code['codeValue']));
+        }
     }
 
     public function testAuthTokens(): void

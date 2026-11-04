@@ -82,11 +82,12 @@ final class Device
     }
 
     /**
-     * The code shown on both sides when approving a device: ``"ddd ddd"``.
+     * The code shown on both sides when approving a device: ``"ddd ddd"``. $hubKey is the key this side pinned, $codeValue
+     * what the hub picked after it had the device's key (hub/device/request).
      */
-    public static function safetyCode(string $publicKey): string
+    public static function safetyCode(string $hubKey, string $deviceKey, string $codeValue): string
     {
-        $n = hexdec(substr(hash('sha256', base64_decode($publicKey, true) ?: ''), 0, 8)) % 1_000_000;
+        $n = hexdec(substr(hash('sha256', "hubcode1:{$hubKey}:{$deviceKey}:{$codeValue}"), 0, 8)) % 1_000_000;
 
         return sprintf('%03d %03d', intdiv($n, 1000), $n % 1000);
     }
@@ -192,9 +193,9 @@ final class Device
         return self::deviceId($this->publicKey());
     }
 
-    public function safety(): string
+    public function safety(string $hubKey, string $codeValue): string
     {
-        return self::safetyCode($this->publicKey());
+        return self::safetyCode($hubKey, $this->publicKey(), $codeValue);
     }
 
     /**
