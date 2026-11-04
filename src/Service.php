@@ -17,18 +17,22 @@ use RuntimeException;
  *
  * Port of hub-service (TS reference): on every (re)connect the service sends
  * hub/profile/update (if a profile is set) and hub/service/update with the
- * current services + apps lists. For hub-server, an ``auth`` header with a fresh
- * keychain token (plus ``v: '0'``) is attached to every connect — the hub
- * drops services on disconnect, so both the auth token and the updates are
- * re-issued on each reconnect.
+ * current services + apps lists. The hub drops services on disconnect, so the
+ * updates are re-issued on each reconnect.
  *
- * Auth follows Docs/Devices/protocol.md: v0 tokens until the hub key is pinned
- * from hub/info (in ``hubs.json`` beside the key file), hub-bound v1 tokens
- * after that. A refused v1 connect (the hub key changed or a different server
- * answers) keeps retrying with v1; there is no silent v0 fallback.
+ * Auth follows Docs/Devices/protocol.md section 2: every (re)connect asks the
+ * hub to prove its key and sends a fresh token for that answer alone (see
+ * HubProof). The first proven key is pinned in ``hubs.json`` beside the key
+ * file; a hub that doesn't prove its key, or answers with another than the
+ * pinned one, gets nothing.
  */
 final class Service
 {
+    /** Retry delays (seconds) for a hub that doesn't prove its key, or can't be reached. */
+    private const HANDSHAKE_RETRY = 1.0;
+
+    private const HANDSHAKE_MAX_RETRY = 30.0;
+
     private Channel $channel;
 
     private int|string $address;
@@ -47,12 +51,18 @@ final class Service
 
     private ?ClientSender $sender = null;
 
-    /** @var callable(int, ?string=): string */
+    /** @var callable(string, string): string */
     private $sign;
 
-    private bool $signTakesHubKey;
-
     private ?string $hubKey;
+
+    private bool $allowPlaintext;
+
+    /** Why the service isn't connected, if it knows. */
+    private ?string $lastError = null;
+
+    /** Moves on with every stop, which ends a wait for the hub's proof. */
+    private int $generation = 0;
 
     private ?string $pinned = null;
 
@@ -72,9 +82,13 @@ final class Service
 
     /**
      * Options: ``address``, ``name``, ``icon``; ``sign`` (token factory, called
-     * as ``sign(expires, hubKey)``; one taking a single parameter always
-     * connects with v0); ``hubKey`` (the hub's key when known up front,
-     * otherwise learned from hub/info and pinned); ``instance`` (this service's
+     * as ``sign(hubKey, challenge)`` with the key the hub proved and the
+     * challenge of this connect, only after the proof); ``hubKey`` (the hub's
+     * key when known up front, otherwise the first key a hub proves is pinned);
+     * ``allowPlaintext`` (dial plain ws:// beyond loopback, the overlay and the
+     * LAN, which would carry the key unencrypted: for private networks the SDK
+     * can't recognize, such as a container's ws://hub:1997; also
+     * ``HUB_ALLOW_PLAINTEXT=1``); ``instance`` (this service's
      * name on its device, unique per device; default: ``HUB_INSTANCE``, else
      * ``name``, else the cwd name, else ``service``); ``device``
      * (true, the default, certifies the service with this device's key when
@@ -82,7 +96,7 @@ final class Service
      * uses that one); ``signChallenge`` (signs Hub Network agent challenges
      * with the service key; default: the keychain ``auth`` file).
      *
-     * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable, hubKey?: string, instance?: string, device?: bool|Device} $options
+     * @param array{address?: int|string, name?: string, icon?: mixed, sign?: callable, hubKey?: string, allowPlaintext?: bool, instance?: string, device?: bool|Device} $options
      */
     public function __construct(array $options = [])
     {
@@ -99,8 +113,8 @@ final class Service
         }
 
         $this->sign = $options['sign'] ?? [Keychain::class, 'sign'];
-        $this->signTakesHubKey = self::parameterCount($this->sign) >= 2;
         $this->hubKey = $options['hubKey'] ?? null;
+        $this->allowPlaintext = ($options['allowPlaintext'] ?? false) || getenv('HUB_ALLOW_PLAINTEXT') === '1';
         $this->instance = $options['instance'] ?? null;
         $device = $options['device'] ?? true;
         $this->device = $device instanceof Device ? $device : ($device ? new Device() : null);
@@ -189,9 +203,10 @@ final class Service
     }
 
     /**
-     * Connects to the hub. On every (re)connect it attaches a fresh auth token
-     * (hub-server) and sends hub/profile/update (if a profile is set) plus
-     * hub/service/update with the current services+apps.
+     * Connects to the hub. Every (re)connect first asks the hub to prove its key
+     * (see authHeaders), then sends hub/profile/update (if a profile is set) plus
+     * hub/service/update with the current services+apps. A plain ws:// address
+     * beyond loopback, the overlay and the LAN isn't dialed.
      */
     public function start(): self
     {
@@ -199,11 +214,27 @@ final class Service
             return $this;
         }
 
+        $this->lastError = null;
+        // channel-php only encrypts wss://: it would dial https:// and quic:// as plain TCP.
+        if (in_array(strtolower((string) parse_url((string) $this->address, PHP_URL_SCHEME)), ['https', 'quic'], true)) {
+            $this->lastError = $this->target() . " would carry this service's key unencrypted: this client only "
+                . 'encrypts wss://';
+            error_log('hub-service: ' . $this->lastError);
+
+            return $this;
+        }
+        if (!$this->allowPlaintext && HubProof::hubTransportOf($this->address) === HubProof::REFUSED) {
+            $this->lastError = $this->target() . " would carry this service's key unencrypted. Use wss://, "
+                . 'or set allowPlaintext (HUB_ALLOW_PLAINTEXT=1) on a private network';
+            error_log('hub-service: ' . $this->lastError);
+
+            return $this;
+        }
+
         $service = $this;
         $this->sender = $this->channel->connect($this->address, [
             'headers' => static function () use ($service): array {
-                // Fresh token per connect: the client resolves the provider on
-                // every (re)connect, so each upgrade carries a new signature.
+                // The client resolves the provider before every (re)connect.
                 return $service->authHeaders();
             },
             'onConnect' => static function (Sender $sender) use ($service): void {
@@ -222,23 +253,85 @@ final class Service
     }
 
     /**
-     * Auth headers for the next connect: a fresh token, ``v`` and (with a
-     * pinned or supplied hub key) a v1 signature.
+     * Runs before every connection attempt (protocol.md section 2), inside a
+     * coroutine. It comes back with a token over a fresh challenge from a hub
+     * that proved its key; until one has, it holds the attempt back, so nothing
+     * goes out and requests keep waiting. A stop makes it throw, which ends the
+     * client's attempt.
      *
      * @return array<string, string>
      */
     public function authHeaders(): array
     {
-        $this->pinLoaded = false; // pick up a pin another process wrote
-        $hubKey = $this->signTakesHubKey ? $this->hubKey() : null;
-        $token = $this->signTakesHubKey ? ($this->sign)(60, $hubKey) : ($this->sign)(60);
+        $generation = $this->generation;
+        $delay = self::HANDSHAKE_RETRY;
+        $reported = null;
+        while (true) {
+            try {
+                $headers = $this->handshake(fn (): bool => $generation !== $this->generation);
+                $this->lastError = null;
 
-        $headers = ['auth' => (string) $token, 'v' => $hubKey !== null ? '1' : '0'];
-        $this->serviceKey = explode('.', $headers['auth'])[1] ?? null;
+                return $headers;
+            } catch (\Throwable $error) {
+                $this->lastError = $error->getMessage();
+                if ($this->lastError !== $reported) {
+                    $reported = $this->lastError;
+                    error_log('hub-service: ' . $reported);
+                }
+            }
+            $deadline = microtime(true) + $delay;
+            do {
+                if ($generation !== $this->generation) {
+                    throw new RuntimeException('Service stopped');
+                }
+                Coroutine::usleep(50_000);
+            } while (microtime(true) < $deadline);
+            $delay = min($delay * 2, self::HANDSHAKE_MAX_RETRY);
+        }
+    }
+
+    /**
+     * Why the service isn't connected, if it knows: a refused address, or a hub
+     * that didn't prove its key or answers with another than the pinned one.
+     */
+    public function lastError(): ?string
+    {
+        return $this->lastError;
+    }
+
+    /**
+     * Asks the hub for its proof and signs for that answer alone.
+     *
+     * @param callable(): bool $cancelled
+     * @return array<string, string>
+     */
+    private function handshake(callable $cancelled): array
+    {
+        try {
+            $proof = HubProof::ask($this->address, cancelled: $cancelled);
+        } catch (\Throwable $error) {
+            throw new RuntimeException($this->target() . ': ' . $error->getMessage() . ', sending it nothing', 0, $error);
+        }
+        $this->pinLoaded = false; // pick up a pin another process wrote
+        $pinned = $this->hubKey();
+        if ($pinned === null) {
+            $this->pins()->set($this->target(), $proof['key']);
+            $this->pinned = $proof['key'];
+            $this->pinLoaded = true;
+        } elseif ($pinned !== $proof['key']) {
+            throw new RuntimeException(
+                $this->target() . " answers with key {$proof['key']}, not the pinned $pinned, sending it nothing. "
+                . 'forgetHubKey() if its key really changed',
+            );
+        }
+        $token = (string) ($this->sign)($proof['key'], $proof['challenge']);
+
+        $headers = ['auth' => $token, 'v' => Keychain::AUTH_VERSION];
+        $this->serviceKey = explode('.', $token)[1] ?? null;
         if ($this->device !== null) {
             try {
                 // The certificate names the key in the token, whoever signed it.
-                $headers['device'] = $this->device->certificate(explode('.', $headers['auth'])[1] ?? '', $this->instance());
+                $headers['device'] = $this->device->certificate(explode('.', $token)[1] ?? '', $this->instance());
             } catch (\Throwable) {
                 // No readable or creatable device key: a plain key connection.
             }
@@ -283,8 +376,9 @@ final class Service
     }
 
     /**
-     * The hub key this service signs for: supplied, else pinned. The pin is
-     * read from hubs.json at each connect and kept in memory.
+     * The hub key this service expects: supplied, else pinned, else null until
+     * a hub proved one. The pin is read from hubs.json at each connect and kept
+     * in memory.
      */
     public function hubKey(): ?string
     {
@@ -300,7 +394,7 @@ final class Service
     }
 
     /**
-     * Clears the pinned hub key; the next connect learns it again (v0).
+     * Clears the pinned hub key; the next connect pins what the hub proves.
      */
     public function forgetHubKey(): void
     {
@@ -310,10 +404,12 @@ final class Service
     }
 
     /**
-     * Disconnects from the hub and stops reconnecting.
+     * Disconnects from the hub and stops reconnecting, ending a wait for its
+     * proof.
      */
     public function stop(): void
     {
+        $this->generation++;
         $this->sender?->stop();
         $this->sender = null;
     }
@@ -363,7 +459,7 @@ final class Service
     private function senderOrError(): ClientSender
     {
         if ($this->sender === null) {
-            throw new RuntimeException('Service not started');
+            throw new RuntimeException($this->lastError ?? 'Service not started');
         }
 
         return $this->sender;
@@ -376,7 +472,7 @@ final class Service
                 $sender->send('hub/profile/update', $this->profile);
             }
         } catch (\Throwable) {
-            // hub-lite always responds; ignore failures to keep reconnects going.
+            // The connection dropped mid-send; the next connect re-sends it.
         }
         try {
             $sender->send('hub/service/update', $this->update());
@@ -389,9 +485,6 @@ final class Service
             } catch (\Throwable $error) {
                 error_log('Failed to republish network shares: ' . $error->getMessage());
             }
-        }
-        if ($this->signTakesHubKey && $this->hubKey() === null) {
-            $this->learnHubKey($sender);
         }
     }
 
@@ -501,32 +594,6 @@ final class Service
     }
 
     /**
-     * Pins the hub key from hub/info, then reconnects with v1 at once.
-     * hub-lite doesn't answer hub/info, so the service stays on v0 there.
-     */
-    private function learnHubKey(Sender $sender): void
-    {
-        try {
-            $info = $sender->send('hub/info');
-        } catch (\Throwable) {
-            return;
-        }
-        $key = is_array($info) ? ($info['key'] ?? null) : null;
-        if (!is_string($key) || $key === '' || $this->hubKey() !== null) {
-            return;
-        }
-        $this->pins()->set($this->target(), $key);
-        $this->pinned = $key;
-        $this->pinLoaded = true;
-        $ws = $this->sender?->ws;
-        if ($ws !== null) {
-            // Close the socket, not the client: it reconnects with v1 headers.
-            $socket = (new \ReflectionProperty($ws, 'ws'))->getValue($ws);
-            $socket?->close();
-        }
-    }
-
-    /**
      * Adapts a ``(body)`` or ``(body, Request)`` handler to channel-php.
      */
     private function adapt(callable $handler): \Closure
@@ -560,13 +627,6 @@ final class Service
         }
 
         return false;
-    }
-
-    private static function parameterCount(callable $callable): int
-    {
-        $reflection = self::reflect($callable);
-
-        return $reflection->isVariadic() ? PHP_INT_MAX : $reflection->getNumberOfParameters();
     }
 
     private static function reflect(callable $callable): \ReflectionFunctionAbstract

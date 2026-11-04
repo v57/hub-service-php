@@ -28,7 +28,7 @@ final class ConnectTest extends CoroutineTestCase
 
     public function testConnectSendsProfileAndServiceUpdates(): void
     {
-        $hub = new FakeHub(lite: true);
+        $hub = new FakeHub();
         try {
             $this->co(function () use ($hub): void {
                 $service = (new Service(['address' => $hub->port, 'name' => 'Echo']))

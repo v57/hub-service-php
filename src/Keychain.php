@@ -14,18 +14,17 @@ use RuntimeException;
  * - The key file (``auth`` in the working directory, matching the TS keychain)
  *   is the base64 encoding of the 48-byte PKCS8 DER private key followed by
  *   the 44-byte SPKI DER public key (92 bytes total, 124 base64 chars).
- * - A signed token has the shape ``key.<pub>.<sig>.<expiry>`` where:
+ * - A signed token has the shape ``key.<pub>.<sig>.<expiry>.<nonce>`` where:
  *     pub     = base64 of the 44-byte SPKI public key (bytes 48..92 of the file)
- *     sig     = base64 ed25519 signature over the signed data
- *     expiry  = DECIMAL epoch-seconds string of now + 60 (protocol default;
- *               hub-server rejects it once expired or over 5 minutes ahead)
- * - The signed data depends on the ``v`` header (Docs/Devices/protocol.md):
- *     v: 0    the expiry string alone
- *     v: 1    ``hub1:<hub key>:<expiry>``, so the token only works on the hub
- *             whose key it names
+ *     sig     = base64 ed25519 signature of ``hub1:<hub key>:<nonce>:<expiry>``
+ *     expiry  = DECIMAL epoch-seconds string of now + 30 (protocol default;
+ *               hub-server rejects it once expired or over a minute ahead)
+ *     nonce   = the challenge the hub answered in ``hub/info``, so the token
+ *               works once, on the hub whose key it names
+ *               (Docs/Devices/protocol.md section 2)
  * - The hub verifies the signature against the embedded public key and treats
  *   the key as the connection identity (owner/host/group permissions).
- * - Hub keys learned from ``hub/info`` are pinned in ``hubs.json`` beside the
+ * - Hub keys proved in ``hub/info`` are pinned in ``hubs.json`` beside the
  *   key file: ``{"<address>": "<hub SPKI>"}`` (see HubPins).
  *
  * Keys are generated with the OpenSSL extension (openssl_pkey_new
@@ -36,12 +35,14 @@ use RuntimeException;
  *
  * Usage::
  *
- *     $token = Keychain::sign();                  // v0 token for a connect
- *     $token = Keychain::sign(hubKey: $hubKey);   // v1 token bound to one hub
- *     $pub = Keychain::publicKey();               // the service's public key (identity)
+ *     $token = Keychain::sign($hubKey, $challenge); // a token for one connect to one hub
+ *     $pub = Keychain::publicKey();                 // the service's public key (identity)
  */
 final class Keychain
 {
+    /** Sent as the ``v`` header next to ``auth``. */
+    public const AUTH_VERSION = '1';
+
     /** TS keychain layout: PKCS8 DER private key (48 bytes for ed25519) followed by SPKI DER public key (44 bytes). */
     private const PRIVATE_DER_LENGTH = 48;
 
@@ -93,15 +94,14 @@ final class Keychain
     }
 
     /**
-     * A fresh auth token: ``key.<pub>.<sig>.<expiry>``. With ``$hubKey`` (the
-     * pinned hub key) it signs ``hub1:<hub key>:<expiry>`` for ``v: 1``;
-     * without it the token is v0 (the expiry alone).
+     * A fresh auth token for one connection to the hub with key ``$hubKey``,
+     * over the challenge it answered in ``hub/info``.
      */
-    public static function sign(int $expires = 60, ?string $hubKey = null): string
+    public static function sign(string $hubKey, string $nonce, int $expires = 30): string
     {
         $key = self::loadOrGenerate();
 
-        return self::tokenWith($key['seed'], $key['publicB64'], time() + $expires, $hubKey);
+        return self::tokenWith($key['seed'], $key['publicB64'], time() + $expires, $hubKey, $nonce);
     }
 
     /**
@@ -116,11 +116,12 @@ final class Keychain
     }
 
     /**
-     * An auth token for an exact expiry from key file bytes (92 bytes).
+     * An auth token for an exact expiry, one hub and one challenge, from key
+     * file bytes (92 bytes).
      */
-    public static function token(string $keyFile, int $expiry, ?string $hubKey = null): string
+    public static function token(string $keyFile, int $expiry, string $hubKey, string $nonce): string
     {
-        return self::tokenWith(self::seed($keyFile), self::spki($keyFile), $expiry, $hubKey);
+        return self::tokenWith(self::seed($keyFile), self::spki($keyFile), $expiry, $hubKey, $nonce);
     }
 
     /**
@@ -232,12 +233,11 @@ final class Keychain
         return rtrim($url, '/');
     }
 
-    private static function tokenWith(string $seed, string $publicB64, int $expiry, ?string $hubKey): string
+    private static function tokenWith(string $seed, string $publicB64, int $expiry, string $hubKey, string $nonce): string
     {
-        $data = $hubKey !== null && $hubKey !== '' ? "hub1:$hubKey:$expiry" : (string) $expiry;
-        $signature = sodium_crypto_sign_detached($data, self::secretKey($seed));
+        $signature = sodium_crypto_sign_detached("hub1:$hubKey:$nonce:$expiry", self::secretKey($seed));
 
-        return sprintf('key.%s.%s.%s', $publicB64, base64_encode($signature), $expiry);
+        return sprintf('key.%s.%s.%s.%s', $publicB64, base64_encode($signature), $expiry, $nonce);
     }
 
     private static function seed(string $keyFile): string

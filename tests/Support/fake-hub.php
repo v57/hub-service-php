@@ -3,27 +3,38 @@
 declare(strict_types=1);
 
 // A hub for the live tests, run as its own PHP process (see FakeHub).
-// Usage: php fake-hub.php <port> <log file> <pro|lite> [caller <results file>]
+// Usage: php fake-hub.php <port> <log file> <proof|no-proof|another-signs|another-key> [caller <results file>]
 
 use ChannelPhp\Channel;
+use HubServicePhp\HubProof;
+use HubServicePhp\Keychain;
 
 require __DIR__ . '/../../vendor/autoload.php';
 
-[, $port, $log, $mode] = $argv;
+[, $port, $log, $answer] = $argv;
 $scenario = $argv[4] ?? 'none';
 $results = $argv[5] ?? '';
-$hubKey = 'MCowBQYDK2VwAyEAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=';
+$vectors = json_decode((string) file_get_contents(__DIR__ . '/../../../../Docs/Devices/vectors.json'), true);
+$hub = $vectors['keys']['hub'];
+$other = $vectors['keys']['service'];
 
 $append = static function (array $entry) use ($log): void {
     file_put_contents($log, json_encode($entry) . "\n", FILE_APPEND | LOCK_EX);
 };
 
 $channel = new Channel();
-if ($mode !== 'lite') {
-    $channel->post('hub/info', static fn (): array => [
-        'key' => $hubKey, 'protocol' => 1, 'pro' => true, 'mode' => 'default-allow',
-    ]);
-}
+$channel->post('hub/info', static function (array $request) use ($answer, $hub, $other, $append): array {
+    $nonce = $request['body']['nonce'] ?? '';
+    $append(['nonce' => $nonce]);
+    $signer = $answer === 'proof' || $answer === 'no-proof' ? $hub : $other;
+    $key = $answer === 'another-key' ? $other : $hub;
+    $info = ['key' => $key['publicKey'], 'protocol' => 2, 'challenge' => 'challenge-' . bin2hex(random_bytes(8))];
+    if ($answer !== 'no-proof') {
+        $info['proof'] = Keychain::signData(Keychain::decodeKeyFile($signer['keyFile']), HubProof::signedData($key['publicKey'], $nonce));
+    }
+    return $info;
+});
+$channel->post('test/echo', static fn (array $request): mixed => $request['body'] ?? null);
 foreach (['hub/profile/update', 'hub/service/update'] as $path) {
     $channel->post($path, static function (array $request) use ($append, $path): mixed {
         $append(['path' => $path, 'body' => $request['body'] ?? null]);
@@ -40,7 +51,6 @@ $channel->post('network/shares/replace', static function (array $request) use ($
 });
 if ($scenario === 'caller') {
     // Calls the service back with the vectors' caller context.
-    $vectors = json_decode((string) file_get_contents(__DIR__ . '/../../../../Docs/Devices/vectors.json'), true);
     $context = $vectors['caller']['context'];
     $channel->post('test/run', static function (array $request) use ($context, $results): mixed {
         $sender = $request['sender'];

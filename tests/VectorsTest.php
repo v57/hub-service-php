@@ -42,8 +42,7 @@ final class VectorsTest extends TestCase
     {
         $vectors = self::vectors();
         $auth = $vectors['auth'];
-        self::assertSame($auth['v0']['header'], Keychain::token(self::key('service'), $auth['expiry']));
-        self::assertSame($auth['v1']['header'], Keychain::token(self::key('service'), $auth['expiry'], $vectors['keys']['hub']['publicKey']));
+        self::assertSame($auth['v1']['header'], Keychain::token(self::key('service'), $auth['expiry'], $vectors['keys']['hub']['publicKey'], $auth['nonce']));
     }
 
     public function testCertificates(): void

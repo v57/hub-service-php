@@ -7,11 +7,12 @@ namespace HubServicePhp\Tests;
 use HubServicePhp\Device;
 use HubServicePhp\Keychain;
 use HubServicePhp\Service;
-use PHPUnit\Framework\TestCase;
+use HubServicePhp\Tests\Support\CoroutineTestCase;
+use HubServicePhp\Tests\Support\FakeHub;
 use RuntimeException;
 
 /** Device key file and service certificates (protocol.md §3). */
-final class DeviceTest extends TestCase
+final class DeviceTest extends CoroutineTestCase
 {
     private string $dir;
 
@@ -31,6 +32,25 @@ final class DeviceTest extends TestCase
         putenv($this->saved === false ? 'HUB_DEVICE_KEY' : 'HUB_DEVICE_KEY=' . $this->saved);
         Keychain::setKeyPath('auth');
         exec('rm -rf ' . escapeshellarg($this->dir));
+    }
+
+    /**
+     * The headers a service with $options gets from a hub that proves its key.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, string>
+     */
+    private function connectHeaders(array $options, ?Service &$service = null): array
+    {
+        $hub = new FakeHub();
+        try {
+            $service = new Service(['address' => $hub->port] + $options);
+            $connecting = $service;
+
+            return $this->co(static fn (): array => $connecting->authHeaders());
+        } finally {
+            $hub->stop();
+        }
     }
 
     /**
@@ -85,8 +105,7 @@ final class DeviceTest extends TestCase
 
     public function testServiceSendsDeviceHeaderForItsKey(): void
     {
-        $service = new Service(['address' => 1, 'instance' => 'echo/main']);
-        $headers = $service->authHeaders();
+        $headers = $this->connectHeaders(['instance' => 'echo/main'], $service);
         $body = self::decode($headers['device']);
         self::assertSame(Keychain::publicKey(), $body['service']);
         self::assertSame(explode('.', $headers['auth'])[1], $body['service']);
@@ -122,7 +141,7 @@ final class DeviceTest extends TestCase
 
     public function testDeviceModeOffSendsNoHeader(): void
     {
-        self::assertArrayNotHasKey('device', (new Service(['address' => 1, 'device' => false]))->authHeaders());
+        self::assertArrayNotHasKey('device', $this->connectHeaders(['device' => false]));
         self::assertDirectoryDoesNotExist($this->dir . '/hub');
     }
 
@@ -130,7 +149,7 @@ final class DeviceTest extends TestCase
     {
         file_put_contents($this->dir . '/blocked', 'not a directory');
         putenv('HUB_DEVICE_KEY=' . $this->dir . '/blocked/device.key');
-        $headers = (new Service(['address' => 1]))->authHeaders();
+        $headers = $this->connectHeaders([]);
         self::assertArrayNotHasKey('device', $headers);
         self::assertStringStartsWith('key.', $headers['auth']);
     }

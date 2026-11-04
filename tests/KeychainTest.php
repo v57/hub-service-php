@@ -33,24 +33,25 @@ final class KeychainTest extends TestCase
     public function testTokenShapeAndExpiry(): void
     {
         Keychain::setKeyPath($this->dir . '/auth');
-        $token = Keychain::sign();
+        $token = Keychain::sign('hub-key', 'nonce');
         $parts = explode('.', $token);
 
-        self::assertCount(4, $parts);
+        self::assertCount(5, $parts);
         self::assertSame('key', $parts[0]);
         self::assertSame(Keychain::publicKey(), $parts[1]);
         self::assertNotSame('', $parts[2], 'signature must not be empty');
         self::assertMatchesRegularExpression('/^\d+$/', $parts[3], 'expiry must be a DECIMAL string (TS parity)');
 
         $expiry = (int) $parts[3];
-        self::assertGreaterThanOrEqual(time() + 59, $expiry);
-        self::assertLessThanOrEqual(time() + 61, $expiry);
+        self::assertGreaterThanOrEqual(time() + 29, $expiry);
+        self::assertLessThanOrEqual(time() + 31, $expiry);
+        self::assertSame('nonce', $parts[4]);
     }
 
     public function testSignatureVerifiesAgainstPublicKey(): void
     {
         Keychain::setKeyPath($this->dir . '/auth');
-        $token = Keychain::sign();
+        $token = Keychain::sign('hub-key', 'nonce');
         [, $pubB64, $sigB64, $expiry] = explode('.', $token);
 
         $publicDer = base64_decode($pubB64, true);
@@ -62,8 +63,8 @@ final class KeychainTest extends TestCase
         self::assertSame(64, strlen($signature), 'ed25519 signature must be 64 bytes');
 
         self::assertTrue(
-            sodium_crypto_sign_verify_detached($signature, $expiry, $rawPub),
-            'signature must verify against the embedded public key over the expiry string',
+            sodium_crypto_sign_verify_detached($signature, "hub1:hub-key:nonce:$expiry", $rawPub),
+            'signature must verify against the embedded public key over hub1:<hub key>:<challenge>:<expiry>',
         );
     }
 
@@ -82,7 +83,7 @@ final class KeychainTest extends TestCase
         // Reload forces a fresh parse of the file.
         Keychain::setKeyPath($path);
         self::assertSame($pub, Keychain::publicKey(), 'public key must survive a reload');
-        $reloaded = explode('.', Keychain::sign());
+        $reloaded = explode('.', Keychain::sign('hub-key', 'nonce'));
         self::assertSame('key', $reloaded[0]);
         self::assertSame($pub, $reloaded[1], 'token public key must survive a reload');
         self::assertNotSame('', $reloaded[2]);
@@ -98,11 +99,11 @@ final class KeychainTest extends TestCase
         self::assertSame(self::TS_PUB, Keychain::publicKey());
 
         // The token signed with the loaded TS key must verify against its pub.
-        $token = Keychain::sign();
+        $token = Keychain::sign('hub-key', 'nonce');
         [, $pubB64, $sigB64, $expiry] = explode('.', $token);
         self::assertSame(self::TS_PUB, $pubB64);
         $rawPub = substr(base64_decode($pubB64, true), 12, 32);
-        self::assertTrue(sodium_crypto_sign_verify_detached(base64_decode($sigB64, true), $expiry, $rawPub));
+        self::assertTrue(sodium_crypto_sign_verify_detached(base64_decode($sigB64, true), "hub1:hub-key:nonce:$expiry", $rawPub));
     }
 
     public function testCorruptAuthFileThrows(): void
@@ -120,9 +121,9 @@ final class KeychainTest extends TestCase
     {
         Keychain::setKeyPath($this->dir . '/auth');
         // sign(1) and sign(10) produce different expiry seconds → different tokens.
-        self::assertNotSame(Keychain::sign(1), Keychain::sign(10));
+        self::assertNotSame(Keychain::sign('hub-key', 'nonce', 1), Keychain::sign('hub-key', 'nonce', 10));
         // A custom expiry must be honored: expiry == now + 0 (within a second).
-        $parts = explode('.', Keychain::sign(0));
+        $parts = explode('.', Keychain::sign('hub-key', 'nonce', 0));
         self::assertGreaterThanOrEqual(time() - 1, (int) $parts[3]);
         self::assertLessThanOrEqual(time() + 1, (int) $parts[3]);
     }

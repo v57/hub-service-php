@@ -34,7 +34,7 @@ In this monorepo the dependency is wired by path:
 
 ## Usage
 
-Start a hub first (`new Hub()` from hub-lite, listens on 1997), then:
+Start a hub first (hub-server, listens on 1997), then:
 
 ```php
 <?php
@@ -103,10 +103,17 @@ $response = $service->send('echo/upper', 'hello'); // "HELLO"
 
 - **Service key:** the `auth` file in the cwd (TS layout), sent as a signed
   `auth` token on every connect.
-- **Hub key:** the first connect uses `v: 0` and calls `hub/info`; the hub key
-  is pinned in `hubs.json` beside the `auth` file and later connects sign
-  `hub1:<hub key>:<expiry>` with `v: 1`. hub-lite stays on v0. The `hubKey`
-  option supplies it up front and `forgetHubKey()` clears the pin.
+- **Hub key:** before every connect the service asks `hub/info` with a fresh
+  nonce on a short anonymous connection. Only an answer with a valid proof of
+  the key it claims gets a token, signing `hub1:<hub key>:<challenge>:<expiry>`
+  with `v: 1`. The first proven key is pinned in `hubs.json` beside the `auth`
+  file. A hub that doesn't prove its key, or answers with another than the
+  pinned one, gets nothing and is reported (`lastError()`) while the service
+  keeps trying, so calls made right after `start()` wait instead of being lost.
+  The `hubKey` option supplies it up front and `forgetHubKey()` clears the pin.
+- **Transport:** plain `ws://` beyond loopback, the overlay and the LAN isn't
+  dialed unless the `allowPlaintext` option or `HUB_ALLOW_PLAINTEXT=1` says so;
+  `HubProof::hubTransportOf($address)` classifies an address.
 - **Device:** a certificate signed by `~/.hub/device.key` (`HUB_DEVICE_KEY`
   overrides it) goes in the `device` header and is renewed with less than a
   day left. The `instance` option sets the instance name and

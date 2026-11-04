@@ -10,7 +10,7 @@ use RuntimeException;
 /**
  * A hub in its own OpenSwoole server process (fake-hub.php). It logs every
  * connect's headers and every update to a file the test reads, and answers
- * hub/info unless booted as hub-lite.
+ * hub/info as $answer says.
  */
 final class FakeHub
 {
@@ -28,13 +28,15 @@ final class FakeHub
      * coroutine hooks, and then the hub's header logging yields inside the
      * open handler and drops the client's first message.
      *
+     * @param string $answer 'proof', 'no-proof', 'another-signs' (claims the hub's key, signs with
+     *                       another) or 'another-key' (proves another key)
      * @param string $scenario 'none', or 'caller' (test/run calls the service back, results to $results)
      */
-    public function __construct(bool $lite = false, string $scenario = 'none', string $results = '')
+    public function __construct(string $answer = 'proof', string $scenario = 'none', string $results = '')
     {
         $this->log = (string) tempnam(sys_get_temp_dir(), 'fakehub-php-');
         $this->port = self::freePort();
-        $command = [PHP_BINARY, __DIR__ . '/fake-hub.php', (string) $this->port, $this->log, $lite ? 'lite' : 'pro', $scenario, $results];
+        $command = [PHP_BINARY, __DIR__ . '/fake-hub.php', (string) $this->port, $this->log, $answer, $scenario, $results];
         $process = proc_open($command, [0 => ['pipe', 'r'], 1 => STDOUT, 2 => STDERR], $pipes);
         if (!is_resource($process)) {
             throw new RuntimeException('cannot start the fake hub');
@@ -86,6 +88,29 @@ final class FakeHub
             static fn (array $e): array => $e['headers'],
             array_filter($this->entries(), static fn (array $e): bool => isset($e['headers'])),
         ));
+    }
+
+    /**
+     * The connects that carried credentials.
+     *
+     * @return list<array<string, string|null>>
+     */
+    public function credentials(): array
+    {
+        return array_values(array_filter(
+            $this->connects(),
+            static fn (array $headers): bool => isset($headers['auth']) || isset($headers['device']),
+        ));
+    }
+
+    /**
+     * The hub/info questions answered, by client nonce.
+     *
+     * @return list<string>
+     */
+    public function nonces(): array
+    {
+        return array_values(array_column($this->entries(), 'nonce'));
     }
 
     /**
