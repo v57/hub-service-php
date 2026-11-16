@@ -17,20 +17,24 @@ coroutines; PHP ^8.3 + ext-openswoole).
 
 ## Install
 
-```bash
-composer require v57/hub-service-php
-```
-
-In this monorepo the dependency is wired by path:
+Not on Packagist yet; Composer takes it and [channel-php](https://github.com/v57/channel-php) from GitHub. Your
+project's `composer.json` lists both repositories, since Composer reads repositories only from the root package:
 
 ```json
 {
   "repositories": [
-    { "type": "path", "url": "../../Channel/channel-php", "options": { "symlink": true } }
+    { "type": "vcs", "url": "https://github.com/v57/hub-service-php" },
+    { "type": "vcs", "url": "https://github.com/v57/channel-php" }
   ],
-  "require": { "dimas/channel-php": "dev-main" }
+  "require": {
+    "v57/hub-service-php": "dev-main",
+    "dimas/channel-php": "dev-main"
+  }
 }
 ```
+
+Then `composer install` (PHP 8.3+ with the openswoole and sodium extensions). Inside the Hub checkout this repo's
+own `composer.json` takes channel-php from `../../Channel/channel-php` instead.
 
 ## Usage
 
